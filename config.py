@@ -46,6 +46,14 @@ class PluginSectionConfig(PluginConfigBase):
         description="配置版本",
         json_schema_extra={"label": "配置版本", "disabled": True},
     )
+    sibling_probation_config: str = Field(
+        default="",
+        description=(
+            "「麦麦喊新人说话！」插件的 config.toml 完整路径（可选）。"
+            "留空自动在插件目录同级查找 group-probation-plugin/ 下的配置"
+        ),
+        json_schema_extra={"label": "考察期联动配置路径", "hint": "留空自动探测兄弟插件目录"},
+    )
 
 
 class ScopeConfig(PluginConfigBase):

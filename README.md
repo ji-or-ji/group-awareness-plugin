@@ -24,6 +24,8 @@
 - `get_group_avatar`：群头像（CDN URL 规则，无需 API）
 - `get_group_notice`：群公告
 - `get_group_shut_list`：群禁言列表
+- `get_group_essence`：群精华消息
+- `get_group_member_changes`：群成员变动日志（进群/退群，需开启 `plugin.record_changes`）
 
 ## 与「麦麦喊新人说话！」的联动（考察期）
 
@@ -50,7 +52,7 @@
 
 ## 配置
 
-见 `config.toml` 注释。要点：
+见 `config.example.toml` 注释。要点：
 - `scope.whitelist / blacklist`：群范围黑白名单（黑名单优先）
 - `events.<类型>.mode`：template / llm / context
 - `self_ban.mode`：bot 自己被禁言时 notify_admin（私聊通知）/ context / none

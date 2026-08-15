@@ -116,26 +116,36 @@ class GroupAwarenessPlugin(MaiBotPlugin):
     def _read_sibling_probation_config(self) -> Any:
         """读取「麦麦喊新人说话！」(group-probation-plugin) 的考察期配置。
 
-        存在且解析成功时返回 ProbationConfig 实例（联动时配置只维护一份）；
-        不存在或解析失败返回 None（回退用自身配置）。
+        候选路径（按优先级）：
+        1. 配置项 plugin.sibling_probation_config（用户显式指定完整路径）
+        2. 插件目录同级的 group-probation-plugin/config.toml
+        3. 插件目录同级的 group-probation-plugin/config.example.toml
+
+        全部不存在或解析失败时返回 None（静默回退用自身配置），不抛错、不影响启动。
         """
-        try:
-            sibling_cfg = (
-                Path(__file__).resolve().parents[1]
-                / "group-probation-plugin"
-                / "config.toml"
-            )
-            if not sibling_cfg.exists():
-                return None
-            with open(sibling_cfg, "rb") as f:
-                data = tomllib.load(f)
-            section = data.get("probation")
-            if not isinstance(section, dict):
-                return None
-            return ProbationConfig(**section)
-        except Exception as exc:
-            self.ctx.logger.debug("[考察期] 读取兄弟配置失败: %s", exc)
-            return None
+        candidates: list[Path] = []
+        configured = str(
+            getattr(self.config.plugin, "sibling_probation_config", "") or ""
+        ).strip()
+        if configured:
+            candidates.append(Path(configured))
+        plugins_dir = Path(__file__).resolve().parents[1]
+        candidates.append(plugins_dir / "group-probation-plugin" / "config.toml")
+        candidates.append(plugins_dir / "group-probation-plugin" / "config.example.toml")
+        for path in candidates:
+            try:
+                if not path.is_file():
+                    continue
+                with open(path, "rb") as f:
+                    data = tomllib.load(f)
+                section = data.get("probation")
+                if not isinstance(section, dict):
+                    continue
+                return ProbationConfig(**section)
+            except Exception as exc:
+                self.ctx.logger.debug("[考察期] 读取兄弟配置失败 (%s): %s", path, exc)
+                continue
+        return None
 
     # ===== 事件处理 Hook =====
 
