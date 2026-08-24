@@ -39,6 +39,8 @@ EVT_GROUP_NAME = "group_name"  # notify 子类型
 _NAME_CACHE_TTL = 600
 _NAME_NEG_CACHE_TTL = 120
 _STREAM_CACHE_TTL = 600
+# 会话 -> 群 映射缓存 TTL（秒，供查询工具校验「当前会话群」）
+_SESSION_GROUP_TTL = 600
 
 _DEFAULT_LLM_PERSONA = "你是一个群聊机器人，正和大家在同一个 QQ 群里。"
 
@@ -55,6 +57,8 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         super().__init__()
         self._name_cache: dict[tuple[str, str], tuple[str, float]] = {}
         self._stream_cache: dict[str, tuple[str, float]] = {}
+        # stream_id -> (ts, group_id)：记录最近每条消息所属群，供工具校验当前会话群
+        self._session_to_group: dict[str, tuple[float, str]] = {}
         self._self_id = ""
         # 群成员变动日志：{group_id: [{type, user_id, nickname, ts}]}，供查询工具读取后清空
         self._pending_changes: dict[str, list[dict[str, Any]]] = {}
@@ -162,6 +166,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         del kwargs
         if not self.config.plugin.enabled:
             return None
+
+        # 所有消息（含普通群聊）都记录 session->group 映射，供查询工具校验当前会话群
+        self._track_session_group(message)
 
         ctx = self._extract_notice_context(message)
         if ctx is None:
@@ -471,6 +478,83 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         if whitelist and group_id not in whitelist:
             return False
         return True
+
+    # ===== 群数据查询工具防护 =====
+
+    def _track_session_group(self, message: Any) -> None:
+        """记录 session_id -> group_id 映射（群聊消息），供工具校验当前会话群。"""
+        if not isinstance(message, dict):
+            return
+        stream_id = str(message.get("session_id") or "").strip()
+        if not stream_id:
+            return
+        msg_info = message.get("message_info") or {}
+        if not isinstance(msg_info, dict):
+            return
+        group_info = msg_info.get("group_info") or {}
+        if isinstance(group_info, dict):
+            group_id = str(group_info.get("group_id") or "").strip()
+            if group_id:
+                self._session_to_group[stream_id] = (time.monotonic(), group_id)
+
+    def _current_session_group(self, kwargs: dict[str, Any]) -> str:
+        """根据本次工具调用的会话，反查当前会话所在群；解析不到返回空串。"""
+        stream_id = str(kwargs.get("stream_id") or "").strip()
+        if not stream_id:
+            return ""
+        entry = self._session_to_group.get(stream_id)
+        if not entry:
+            return ""
+        ts, group_id = entry
+        if time.monotonic() - ts > _SESSION_GROUP_TTL:
+            return ""
+        return group_id
+
+    def _guard_group_query(
+        self,
+        group_id: Any,
+        kwargs: dict[str, Any],
+        caller_override: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """查询工具的统一访问校验。通过返回 None；拒绝返回错误 dict（供工具直接返回）。
+
+        规则：
+        - 目标群必须在生效范围（scope.whitelist/blacklist）内；
+        - 严格模式下（query.default_to_current_session=true）：
+          - 若调用者是 query.admin_qqs 中的授权管理员（主程序注入的调用者 QQ），可跨群；
+          - 否则 group_id 必须等于当前会话群（由本次调用的 stream_id 反查）。
+        - 宽松模式下不做后两项限制，仅保留生效范围检查。
+
+        caller_override：某些工具（如 get_member_title）的 user_id 参数会占用
+        kwargs['user_id']，调用者身份需由调用方显式指定；传入空串表示该工具不做
+        调用者身份识别（仅限当前会话群，跨群一律拒绝）。
+        """
+
+        group_id_s = str(group_id or "").strip()
+        if not group_id_s:
+            return {"success": False, "reason": "缺少查询目标 group_id"}
+        if not self._in_scope(group_id_s):
+            return {"success": False, "reason": f"群 {group_id_s} 不在插件生效范围，拒绝查询"}
+        if not self.config.query.default_to_current_session:
+            return None
+
+        if caller_override is None:
+            caller = str(kwargs.get("user_id") or "").strip()
+        else:
+            caller = str(caller_override or "").strip()
+
+        admins = {str(x).strip() for x in self.config.query.admin_qqs if str(x).strip()}
+        if caller and caller in admins:
+            return None
+
+        current = self._current_session_group(kwargs)
+        if current and group_id_s == current:
+            return None
+
+        return {
+            "success": False,
+            "reason": f"无权跨群查询：目标群 {group_id_s} 不是当前会话群，且调用者非授权管理员",
+        }
 
     def _record_change(self, ctx: dict[str, Any]) -> None:
         """把一次进群/退群事件记入该群的变动日志。"""
@@ -853,6 +937,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_group_essence(self, group_id: str, **kwargs) -> dict[str, Any]:
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         try:
             result = await self.ctx.api.call(
                 "adapter.napcat.group.get_essence_msg_list",
@@ -901,6 +988,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
     )
     async def get_group_member_changes(self, group_id: str, **kwargs) -> dict[str, Any]:
         """返回自上次查询以来的群成员变动，并清空。"""
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         changes = self._pending_changes.pop(group_id, [])
         joins = [c for c in changes if c["type"] == "join"]
         leaves = [c for c in changes if c["type"] == "leave"]
@@ -935,6 +1025,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_group_honor(self, group_id: str, **kwargs) -> dict[str, Any]:
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         try:
             result = await self.ctx.api.call(
                 "adapter.napcat.group.get_group_honor_info",
@@ -982,6 +1075,10 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_member_title(self, group_id: str, user_id: str, **kwargs) -> dict[str, Any]:
+        # user_id 参数占用 kwargs['user_id']，调用者身份不可用，跨群一律拒绝（仅限当前会话群）
+        guard = self._guard_group_query(group_id, kwargs, caller_override="")
+        if guard is not None:
+            return guard
         try:
             result = await self.ctx.api.call(
                 "adapter.napcat.group.get_group_member_info",
@@ -1015,6 +1112,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_group_avatar(self, group_id: str, **kwargs) -> dict[str, Any]:
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         url = _GROUP_AVATAR_URL.format(group_id=group_id)
         return {"success": True, "result": f"群 {group_id} 头像 URL：{url}"}
 
@@ -1033,6 +1133,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_group_notice(self, group_id: str, **kwargs) -> dict[str, Any]:
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         try:
             result = await self.ctx.api.call(
                 "adapter.napcat.group.get_group_notice",
@@ -1071,6 +1174,9 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         ],
     )
     async def get_group_shut_list(self, group_id: str, **kwargs) -> dict[str, Any]:
+        guard = self._guard_group_query(group_id, kwargs)
+        if guard is not None:
+            return guard
         try:
             result = await self.ctx.api.call(
                 "adapter.napcat.group.get_group_shut_list",

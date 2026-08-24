@@ -64,3 +64,9 @@ model = "planner"
 temperature = 0.8
 max_tokens = 128
 
+[query]
+# 群数据查询工具防护：默认仅允许查询当前会话群，跨群仅放行下方授权管理员
+# 保留 true（严格模式，推荐）；关闭可查任意群（不推荐）
+default_to_current_session = true
+admin_qqs = []
+

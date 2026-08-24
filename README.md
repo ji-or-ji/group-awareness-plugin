@@ -27,6 +27,16 @@
 - `get_group_essence`：群精华消息
 - `get_group_member_changes`：群成员变动日志（进群/退群，需开启 `plugin.record_changes`）
 
+## 查询防护（安全）
+
+群公告/精华/荣誉/称号/头像/禁言等查询工具**默认只允许查询调用者「当前会话所在群」**，防止模型被诱导跨群读取其他群的数据。校验逻辑：
+
+- 目标群必须在 `scope.whitelist / blacklist` 生效范围内，否则拒绝；
+- 严格模式（`query.default_to_current_session = true`，默认）：只有 `query.admin_qqs` 中授权的管理员可跨群查询，其余调用者只能查当前会话群；
+- 宽松模式（关闭）仅保留生效范围检查，可查任意群（不推荐）。
+
+> 说明：`get_member_title` 的 `user_id` 参数会占用调用者字段，该工具不做调用者身份识别，跨群一律拒绝（仅限当前会话群）。
+
 ## 与「麦麦喊新人说话！」的联动（考察期）
 
 本插件内置**加群考察期**功能（`[probation]` 配置段）：新人入群自动 @ 欢迎邀请发言，超过考察时长未发言的新成员自动移出群聊。
@@ -57,6 +67,7 @@
 - `events.<类型>.mode`：template / llm / context
 - `self_ban.mode`：bot 自己被禁言时 notify_admin（私聊通知）/ context / none
 - `llm`：人格化回复的模型槽位（默认 planner）
+- `query`：群数据查询工具的访问防护（默认仅当前会话群，`admin_qqs` 允许跨群）
 
 ## 验证
 

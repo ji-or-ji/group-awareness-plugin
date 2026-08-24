@@ -327,6 +327,33 @@ class ProbationConfig(PluginConfigBase):
     )
 
 
+class QueryGuardConfig(PluginConfigBase):
+    """群数据查询工具的访问防护。
+
+    群公告/精华/称号/荣誉/头像/禁言等查询工具默认只允许查询调用者
+    「当前会话所在群」，避免模型被诱导跨群读取其他群的数据。
+    跨群查询仅放行下面的 admin_qqs 中与调用者 QQ 匹配的管理员。
+    """
+
+    __ui_label__ = "查询防护"
+    __ui_icon__ = "shield-lock"
+    __ui_order__ = 6
+
+    default_to_current_session: bool = Field(
+        default=True,
+        description=(
+            "严格将查询目标限制为当前会话群（非授权管理员跨群查询会被拒绝）；"
+            "关闭后群数据工具可查询任意群（不推荐）"
+        ),
+        json_schema_extra={"label": "仅限当前会话群", "hint": "默认开启；关闭不推荐"},
+    )
+    admin_qqs: list[str] = Field(
+        default_factory=list,
+        description="跨群查询授权管理员 QQ 列表（仅这些 QQ 可查询非当前会话群）",
+        json_schema_extra={"label": "跨群授权管理员 QQ"},
+    )
+
+
 class GroupAwarenessConfig(PluginConfigBase):
     """麦麦看到你了！插件配置。"""
 
@@ -336,6 +363,7 @@ class GroupAwarenessConfig(PluginConfigBase):
     self_ban: SelfBanConfig = Field(default_factory=SelfBanConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     probation: ProbationConfig = Field(default_factory=ProbationConfig)
+    query: QueryGuardConfig = Field(default_factory=QueryGuardConfig)
 
 
 def create_config():
