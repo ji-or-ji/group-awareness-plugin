@@ -46,8 +46,19 @@ max_tokens = 0
 enabled = false
 probation_hours = 48
 check_interval_minutes = 30
+# ===== 考察标准增强 =====
+# 转正消息数阈值：进群后累计发言达到该条数即转正（不再仅看是否发过言）。
+# 0 = 不启用，保持原行为（发过言即转正）。
+min_messages = 0
+# 到期仍未转正时用 LLM 判号：判定为异常（广告/机器人/僵尸号等）才移出，否则保守保留（避免误踢真人）。
+llm_judge = false
+# 判号提示词（可自定义，留空用内置默认）。占位符：{member_name} {user_id} {hours} {message_count} {min_messages} {progress}
+# 例：考察期内该号：昵称 {member_name}（QQ {user_id}），进群 {hours} 小时、发言 {message_count} 条，{progress}，请判断是否为正常真人号。
+llm_judge_prompt = ""
 reject_add_request = false
 whitelist = []
+
+# 注意：留空群白名单 = 考察对全部群生效，范围由 [scope] 控制
 
 [probation.greet]
 mode = "template"

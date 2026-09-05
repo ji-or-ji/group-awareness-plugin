@@ -300,6 +300,33 @@ class ProbationConfig(PluginConfigBase):
         description="检查间隔（分钟）",
         json_schema_extra={"label": "检查间隔（分钟）", "min": 1},
     )
+    min_messages: int = Field(
+        default=0,
+        description=(  # noqa
+            "转正消息数阈值：进群后累计发言达到该条数即转正（不再仅看是否发过言）。"
+            "0 表示不启用，保持原行为（进群后发过言即转正）。"
+        ),
+        json_schema_extra={"label": "转正消息数阈值", "hint": "0=不改用原行为；达到条数即转正", "min": 0},
+    )
+    llm_judge: bool = Field(
+        default=False,
+        description=(  # noqa
+            "考察期满仍未转正时，用 LLM 判断该号是否为正常号/真人："
+            "明确判定异常（广告/机器人等）才移出，其余保守保留。"
+            "关闭则到期直接移出（原行为）。"
+        ),
+        json_schema_extra={"label": "到期 LLM 判号", "hint": "判定异常才移出，避免误踢真人"},
+    )
+    llm_judge_prompt: str = Field(
+        default="",
+        description=(
+            "判号提示词（自定义文本）。留空使用内置默认。占位符："
+            "{member_name} 昵称；{user_id} QQ；{hours} 进群小时；"
+            "{message_count} 考察期内发言数；{min_messages} 转正消息数阈值；"
+            "{progress} 未转正原因（按 min_messages 自动生成）。"
+        ),
+        json_schema_extra={"label": "判号提示词", "hint": "留空用内置默认；可自定义并带占位符"},
+    )
     reject_add_request: bool = Field(
         default=False,
         description="移出时拒绝该成员再次申请加群",

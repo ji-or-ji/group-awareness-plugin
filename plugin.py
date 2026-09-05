@@ -47,6 +47,16 @@ _DEFAULT_LLM_PERSONA = "你是一个群聊机器人，正和大家在同一个 Q
 # 群头像 CDN URL 规则（无需 API）
 _GROUP_AVATAR_URL = "https://p.qlogo.cn/gh/{group_id}/{group_id}/0"
 
+# 考察期到期判号的内置默认提示词（可被 config.llm_judge_prompt 覆盖）。
+# 占位符：{member_name} 昵称 / {user_id} QQ / {hours} 进群小时 / {message_count} 发言数 /
+#         {min_messages} 转正消息数阈值 / {progress} 未转正原因说明（按 min_messages 自动生成）
+_DEFAULT_LLM_JUDGE_PROMPT = (
+    "某个群里有一个新成员正在考察期：昵称 {member_name}（QQ {user_id}），"
+    "进群约 {hours} 小时，考察期内共发言 {message_count} 条，{progress}。"
+    "请判断这个号像不像是正常使用的真人号（而非广告号、机器人号、僵尸号、水军号）。"
+    "只输出两个字：正常 或 异常。若信号不足以判断，倾向输出 正常（避免误踢真人）。"
+)
+
 
 class GroupAwarenessPlugin(MaiBotPlugin):
     """群感知插件主类。"""
@@ -172,6 +182,8 @@ class GroupAwarenessPlugin(MaiBotPlugin):
 
         ctx = self._extract_notice_context(message)
         if ctx is None:
+            # 非通知消息：考察期启用且开着消息数阈值时，累计考察成员的发言数
+            self._count_probation_message(message)
             return None
 
         # 范围黑白名单
@@ -696,6 +708,7 @@ class GroupAwarenessPlugin(MaiBotPlugin):
         self._probation.setdefault(ctx["group_id"], {})[user_id] = {
             "join_ts": time.time(),
             "member_name": member_name,
+            "message_count": 0,
         }
         self._probation_persist()
 
@@ -762,17 +775,118 @@ class GroupAwarenessPlugin(MaiBotPlugin):
                     self._probation_remove(group_id, user_id)
                     continue
                 last_sent = data.get("last_sent_time") or 0
-                # 发过言（进群后）→ 转正
-                if isinstance(last_sent, (int, float)) and last_sent > float(entry.get("join_ts") or 0):
-                    self.ctx.logger.info(
-                        "[考察期] %s(%s) 已发言，转正", entry.get("member_name"), user_id,
-                    )
-                    self._probation_remove(group_id, user_id)
-                    continue
-                # 超时未发言 → 移出
+                min_msg = int(getattr(cfg, "min_messages", 0) or 0)
+                msg_count = int(entry.get("message_count") or 0)
+                # 转正判定：消息数阈值模式 / 原「发过言」模式
+                if min_msg > 0:
+                    if msg_count >= min_msg:
+                        self.ctx.logger.info(
+                            "[考察期] %s(%s) 考察期内发言 %d 条达阈值%d，转正",
+                            entry.get("member_name"), user_id, msg_count, min_msg,
+                        )
+                        self._probation_remove(group_id, user_id)
+                        continue
+                else:
+                    if isinstance(last_sent, (int, float)) and last_sent > float(entry.get("join_ts") or 0):
+                        self.ctx.logger.info(
+                            "[考察期] %s(%s) 已发言，转正", entry.get("member_name"), user_id,
+                        )
+                        self._probation_remove(group_id, user_id)
+                        continue
+                # 到期未转正：可用 LLM 判号（判异常才移出），否则直接移出
                 if now - float(entry.get("join_ts") or 0) >= probation_seconds:
+                    if bool(getattr(cfg, "llm_judge", False)):
+                        normal = await self._judge_normality(user_id, entry)
+                        if normal:
+                            self.ctx.logger.info(
+                                "[考察期] %s(%s) 到期但 LLM 判号为正常号，转正保留",
+                                entry.get("member_name"), user_id,
+                            )
+                            self._probation_remove(group_id, user_id)
+                            continue
+                        self.ctx.logger.info(
+                            "[考察期] %s(%s) 到期且 LLM 判号异常，移出",
+                            entry.get("member_name"), user_id,
+                        )
                     await self._kick_member(group_id, user_id, entry)
         self._probation_persist()
+
+    def _count_probation_message(self, message: Any) -> None:
+        """统计考察名单成员的群内发言数（进群后累计）。
+
+        仅当考察开启且 min_messages>0 时有意义；发送者不在考察名单则不处理。
+        计数写入成员 entry 并持久化，重启后不丢。
+        """
+        if not isinstance(message, dict):
+            return
+        cfg = self._probation_cfg
+        if not cfg.enabled:
+            return
+        if int(getattr(cfg, "min_messages", 0) or 0) <= 0:
+            return
+        if not self._probation:
+            return
+        msg_info = message.get("message_info") or {}
+        if not isinstance(msg_info, dict):
+            return
+        # 发送者 QQ：主路径 message_info.user_info.user_id（宿主标准结构，
+        # 与窝幺烟牌/attention-seeker 等插件提取一致）；
+        # 兜底：顶层 user_id / sender_user_id / sender.user_id
+        user_info = msg_info.get("user_info") or {}
+        if isinstance(user_info, dict):
+            user_id = str(user_info.get("user_id") or "").strip()
+        else:
+            user_id = ""
+        if not user_id:
+            user_id = str(msg_info.get("user_id") or msg_info.get("sender_user_id") or "").strip()
+        if not user_id:
+            sender = msg_info.get("sender") or msg_info.get("user") or {}
+            if isinstance(sender, dict):
+                user_id = str(sender.get("user_id") or "").strip()
+        if not user_id:
+            return
+        # 只在考察名单中累计
+        for members in self._probation.values():
+            if user_id in members:
+                entry = members[user_id]
+                entry["message_count"] = int(entry.get("message_count") or 0) + 1
+                self._probation_persist()
+                return
+
+    async def _judge_normality(self, user_id: str, entry: dict[str, Any]) -> bool:
+        """考察期满仍未转正时，用 LLM 判断该号是否为正常号/真人。
+
+        明确判定为异常（广告/机器人/僵尸号等）才返回 False（应移出）；
+        其余（正常、不确定、解析失败）一律返回 True（保守保留，避免误踢真人）。
+        """
+        cfg = self._probation_cfg
+        member_name = entry.get("member_name") or user_id
+        join_ts = float(entry.get("join_ts") or 0)
+        hours = round((time.time() - join_ts) / 3600, 1) if join_ts else 0
+        msg_count = int(entry.get("message_count") or 0)
+        min_msg = int(getattr(cfg, "min_messages", 0) or 0)
+        # 判号提示词：优先用配置自定义，留空回退内置默认
+        prompt_tpl = str(getattr(cfg, "llm_judge_prompt", "") or "").strip()
+        if not prompt_tpl:
+            prompt_tpl = _DEFAULT_LLM_JUDGE_PROMPT
+        progress = (
+            f"考察标准是达到 {min_msg} 条发言，TA 没达" if min_msg > 0
+            else "考察期内一直没怎么发言"
+        )
+        prompt = (
+            prompt_tpl
+            .replace("{member_name}", member_name)
+            .replace("{user_id}", user_id)
+            .replace("{hours}", str(hours))
+            .replace("{message_count}", str(msg_count))
+            .replace("{min_messages}", str(min_msg))
+            .replace("{progress}", progress)
+        )
+        text = await self._generate_text(prompt)
+        t = (text or "").strip()
+        self.ctx.logger.info("[考察期] LLM 判号 %s(%s) 原始输出=%r", member_name, user_id, t)
+        abnormal = any(k in t for k in ("异常", "广告", "机器人", "僵尸", "水军", "非真人", "可疑", "垃圾"))
+        return not abnormal
 
     async def _kick_member(self, group_id: str, user_id: str, entry: dict[str, Any]) -> None:
         """移出超时未发言成员，并发送移出说明。"""

@@ -5,14 +5,14 @@
   "description": "感知群人员变动事件（进群/退群/禁言/群名/管理变动），按事件类型可选固定模板/人格化LLM/注入上下文三种处理；并提供群荣誉、群员称号、群头像、群公告、禁言列表、精华消息、成员变动等工具化查询能力。麦麦看到你了！",
   "author": {
     "name": "ji-or-ji",
-    "url": "https://github.com/jiruiyu330784"
+    "url": "https://github.com/ji-or-ji"
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/jiruiyu330784/group-awareness-plugin",
-    "homepage": "https://github.com/jiruiyu330784/group-awareness-plugin",
-    "documentation": "https://github.com/jiruiyu330784/group-awareness-plugin/blob/main/README.md",
-    "issues": "https://github.com/jiruiyu330784/group-awareness-plugin/issues"
+    "repository": "https://github.com/ji-or-ji/group-awareness-plugin",
+    "homepage": "https://github.com/ji-or-ji/group-awareness-plugin",
+    "documentation": "https://github.com/ji-or-ji/group-awareness-plugin/blob/main/README.md",
+    "issues": "https://github.com/ji-or-ji/group-awareness-plugin/issues"
   },
   "host_application": {
     "min_version": "1.0.0",
